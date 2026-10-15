@@ -46,6 +46,7 @@ pub struct Sockets {
     pub config: PathBuf,
     pub pad: PathBuf,
     pub tof: PathBuf,
+    pub board: robotd_params::board::Board,
 }
 
 impl Default for Sockets {
@@ -56,6 +57,7 @@ impl Default for Sockets {
             config: proto::socket::CONFIG.into(),
             pad: proto::socket::PAD.into(),
             tof: proto::socket::TOF.into(),
+            board: robotd_params::board::Board::Zero3,
         }
     }
 }
@@ -85,7 +87,7 @@ struct Conn {
 /// session, and in practice two.
 pub struct Pool {
     sockets: Sockets,
-    conns: HashMap<(proto::Service, proto::Lane), Conn>,
+    conns: HashMap<(proto::Service, proto::Lane, String), Conn>,
     /// Every reply and notification from every service, merged. Merging is safe because JSON-RPC
     /// correlates by `id`, which is the peer's business — `mediad` forwards lines without reading
     /// them, for the same reason `btd` does not: a subscription is a stream of notifications on an
@@ -118,19 +120,36 @@ impl Pool {
         lane: proto::Lane,
         line: &str,
     ) -> io::Result<()> {
-        let key = (service, lane);
+        let method = serde_json::from_str::<proto::Request>(line)
+            .map(|r| r.method)
+            .unwrap_or_default();
+        let service = if method == proto::method::HEAD_IMU_STREAM
+            && self.sockets.board == robotd_params::board::Board::Beta
+        {
+            proto::Service::Robot
+        } else {
+            service
+        };
+        // A stream owns its socket after acceptance. Distinct subscriptions
+        // must not queue behind robot.subscribe or tof.stream on the same lane.
+        let stream = if lane == proto::Lane::Stream {
+            method
+        } else {
+            String::new()
+        };
+        let key = (service, lane, stream);
         let mut bytes = line.as_bytes().to_vec();
         bytes.push(b'\n');
 
         if !self.conns.contains_key(&key) {
             let conn = self.open(service, lane).await?;
-            self.conns.insert(key, conn);
+            self.conns.insert(key.clone(), conn);
         }
-        match self.write(key, &bytes).await {
+        match self.write(&key, &bytes).await {
             Err(e) if peer_is_gone(&e) => {
                 let conn = self.open(service, lane).await?;
-                self.conns.insert(key, conn);
-                self.write(key, &bytes).await
+                self.conns.insert(key.clone(), conn);
+                self.write(&key, &bytes).await
             }
             done => done,
         }
@@ -139,8 +158,12 @@ impl Pool {
     /// One bounded write on the connection for `key`. Any failure drops that connection, so
     /// nothing keeps writing into a dead socket. Only this lane's: the others may be perfectly
     /// alive.
-    async fn write(&mut self, key: (proto::Service, proto::Lane), bytes: &[u8]) -> io::Result<()> {
-        let conn = self.conns.get_mut(&key).expect("connection present");
+    async fn write(
+        &mut self,
+        key: &(proto::Service, proto::Lane, String),
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        let conn = self.conns.get_mut(key).expect("connection present");
         let write = async {
             conn.write.write_all(bytes).await?;
             conn.write.flush().await
@@ -148,11 +171,11 @@ impl Pool {
         match tokio::time::timeout(WRITE_TIMEOUT, write).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => {
-                self.conns.remove(&key);
+                self.conns.remove(key);
                 Err(e)
             }
             Err(_) => {
-                self.conns.remove(&key);
+                self.conns.remove(key);
                 Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "upstream write timed out",
@@ -256,6 +279,7 @@ mod tests {
             config: dir.path().join("configd.sock"),
             pad: dir.path().join("padd.sock"),
             tof: dir.path().join("tofd.sock"),
+            ..Default::default()
         };
         let (replies, mut forwarded) = mpsc::channel(8);
         let mut pool = Pool::new(sockets, replies);
@@ -297,5 +321,38 @@ mod tests {
             forwarded.recv().await.is_some(),
             "and its answer is forwarded"
         );
+    }
+    #[tokio::test]
+    async fn beta_head_imu_has_its_own_robot_stream_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("robot.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let sockets = Sockets {
+            robot: path,
+            board: robotd_params::board::Board::Beta,
+            ..Default::default()
+        };
+        let (replies, _) = mpsc::channel(8);
+        let mut pool = Pool::new(sockets, replies);
+        for method in ["robot.subscribe", "head_imu.stream"] {
+            let requested =
+                format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{}}}}"#);
+            let service = if method == "head_imu.stream" {
+                proto::Service::Tof
+            } else {
+                proto::Service::Robot
+            };
+            pool.send(service, proto::Lane::Stream, &requested)
+                .await
+                .unwrap();
+            let (stream, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).await.unwrap();
+            assert!(line.contains(method), "{line}");
+        }
+        assert_eq!(pool.conns.len(), 2);
     }
 }

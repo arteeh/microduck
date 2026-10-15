@@ -239,6 +239,17 @@ impl Intrinsics {
     /// so twin recordings self-describe and need no `--calib`. Tagged [`Source::Sim`], `calibrated`
     /// false (it is not a measurement of a physical sensor). If a scene ever sets a custom camera
     /// `fovy`, update `SIM_VFOV_DEG`.
+    pub fn sim_hfov(width: u32, height: u32, hfov: f64) -> Option<Self> {
+        let mut value = Self::sim(width, height)?;
+        if !hfov.is_finite() || !(1.0..179.0).contains(&hfov) {
+            return None;
+        }
+        let focal = f64::from(width) / 2.0 / (hfov / 2.0).to_radians().tan();
+        value.fx = focal;
+        value.fy = focal;
+        Some(value)
+    }
+
     pub fn sim(width: u32, height: u32) -> Option<Self> {
         if width == 0 || height == 0 {
             return None;
