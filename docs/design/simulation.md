@@ -136,7 +136,9 @@ simulated IMU is explicitly camera-coincident, with the measured chip orientatio
 
 `mediad --sim-camera-hfov DEGREES` publishes the renderer's exact horizontal pinhole field;
 unset preserves the original simulated geometry. It never supplies a GC2093 hardware guess.
-The GC2093 has no published family intrinsics and still requires real calibration.
+The GC2093 has no published family intrinsics and still requires real calibration. A twin whose
+`--config` carries `[media.intrinsics]` publishes those instead, as a calibrated robot does: that is
+how a simulated beta stands in for a calibrated real one, the only kind that publishes geometry.
 
 **A dead simulator is one bad tick.** MuJoCo compiles its model, so changing the number of ducks
 restarts it, and the ducks must live through that. A broken connection is an error returned to the
