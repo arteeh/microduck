@@ -142,6 +142,10 @@ struct Args {
     #[arg(long)]
     sim_camera: Option<String>,
 
+    /// Exact rendered horizontal FOV, degrees. Only for --sim-camera; no hardware guess.
+    #[arg(long, requires = "sim_camera", value_parser = parse_sim_hfov)]
+    sim_camera_hfov: Option<f64>,
+
     /// Rotate in the pipeline as well, so the *encoded stream* comes out upright.
     ///
     /// **Off by default because it is expensive in a way that does not look like rotation.** It
@@ -174,6 +178,16 @@ struct Args {
 
 // Gated with the `main` that calls it: without a pipeline there is nothing to point at a socket and
 // `-D warnings` would call this dead.
+#[cfg(any(target_os = "linux", feature = "gstreamer"))]
+fn parse_sim_hfov(value: &str) -> Result<f64, String> {
+    let value: f64 = value.parse().map_err(|_| "FOV must be a number")?;
+    if value.is_finite() && (1.0..179.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err("sim camera FOV must be between 1 and 179 degrees".into())
+    }
+}
+
 #[cfg(any(target_os = "linux", feature = "gstreamer"))]
 impl Args {
     fn sockets(&self) -> mediad::upstream::Sockets {
@@ -327,7 +341,8 @@ fn main() -> ExitCode {
         // producer that registered without a name would keep it until this daemon restarts. Costs a
         // unix-socket round trip on a boot where `configd` may not be up yet, which is why it is
         // bounded and why a failure is a warning rather than an exit.
-        let sockets = args.sockets();
+        let mut sockets = args.sockets();
+        sockets.board = params.board.version;
         let mut producer =
             mediad::producer::Producer::learn(sockets.clone(), duck_ipc_proto::build_info!()).await;
         // **A camera that is MuJoCo is a simulated robot, whatever `configd` said.** `configd` owns
@@ -565,7 +580,10 @@ fn main() -> ExitCode {
         let intrinsics = if args.sim_camera.is_some() {
             // The MuJoCo twin renders a known field of view, so publish its exact geometry — twin
             // recordings then self-describe (no `--calib` needed on the duckslam side).
-            mediad::camera::Intrinsics::sim(width, height)
+            match args.sim_camera_hfov {
+                Some(hfov) => mediad::camera::Intrinsics::sim_hfov(width, height, hfov),
+                None => mediad::camera::Intrinsics::sim(width, height),
+            }
         } else {
             mediad::camera::Intrinsics::published(
                 media.intrinsics.as_ref(),
