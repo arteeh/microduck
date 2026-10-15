@@ -110,13 +110,23 @@ implementation and carries the reasoning; the short version:
 * **`TCP_NODELAY`**, not as a micro-optimisation: Nagle delays a small write up to ~40 ms, twice the
   tick, and it would present as a slow simulator.
 
-Requests are `{"op":"hello"|"read"|"write"|"gain"|"torque"|"slow", …}`. The handshake carries
-`protocol` (currently 1) and is checked in both directions, because the two halves live in two
+Requests are `{"op":"hello"|"read"|"write"|"gain"|"torque"|"slow"|"tof"|"head_imu", …}`. The handshake carries
+`protocol` (currently 2) and is checked in both directions, because the two halves live in two
 repositories and "your simulator is old" and "your daemon is old" are otherwise the same symptom.
 
 **The simulator reports in the robot's own units** — radians, rad/s, mA, and the IMU already
 resolved into the trunk frame. MuJoCo knows its own model's ordering, scaling and frames; a
 translation layer on this side would be a second place for that to live and drift.
+
+On `zero3`, `tofd --sim HOST:PORT --imu` publishes the simulated BMI088 on its usual
+`head_imu.stream`. Protocol 2 adds `clock_ns` to the handshake and `head_imu` with an `after`
+sequence cursor: bounded physics-rate gyro/specific-force samples, chip axes, rad/s and m/s²,
+monotonic capture nanoseconds and temperature. `tofd` samples that history at `--imu-hz` and runs
+the same Madgwick implementation/gain as the I²C path; no ground-truth quaternion crosses the wire.
+Both repositories must be updated together. The body defaults to exact quantized/saturated IMU
+samples (`--imu-noise 0`); `--imu-noise 1` adds BMI088 datasheet noise and offsets, with a modelled
+60 s bias correlation. `--tof-noise 1` preserves the existing VL53L5CX noise, and `--seed` makes
+sensor noise repeatable. The beta face-board IMU is not simulated.
 
 **A dead simulator is one bad tick.** MuJoCo compiles its model, so changing the number of ducks
 restarts it, and the ducks must live through that. A broken connection is an error returned to the

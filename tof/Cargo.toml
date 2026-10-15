@@ -21,6 +21,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+# Same Madgwick implementation and vector types as bmi088-rs v0.1.2.
+ahrs = { version = "0.8.0", features = ["std"] }
+nalgebra = "0.34.1"
 clap = { workspace = true, features = ["derive"] }
 duck-ipc-proto = { path = "../duck-ipc-proto" }
 # `[head_imu]` lives in `robotd.toml`, and this crate is the schema for that file — the same

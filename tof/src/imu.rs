@@ -83,8 +83,7 @@ impl ImuStatus {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn found(&self, sensor: &str) {
+    pub(super) fn found(&self, sensor: &str) {
         let mut inner = self.inner.lock().unwrap();
         inner.sensor = Some(sensor.to_owned());
         inner.unavailable = None;
@@ -111,7 +110,7 @@ impl ImuStatus {
         ));
     }
 
-    fn lost(&self, why: String) {
+    pub(super) fn lost(&self, why: String) {
         let mut inner = self.inner.lock().unwrap();
         inner.sensor = None;
         inner.unavailable = Some(why);

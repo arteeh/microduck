@@ -40,6 +40,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 mod config;
 mod imu;
+mod sim_imu;
 mod status;
 use imu::ImuStatus;
 use status::Status;
@@ -240,7 +241,7 @@ async fn main() -> std::process::ExitCode {
     // worth fixing, nothing subscribes to the stream yet, and a duck that is not mapping was
     // paying for it from boot.
     //
-    // Skipped for --sim/--fake too: there is no real bus behind either.
+    // --sim feeds raw physics samples to the same fusion; --fake has no head IMU.
     let imu_status = Arc::new(ImuStatus::new(args.imu_hz));
     let (imu_frames, _) = tokio::sync::broadcast::channel(imu::FRAME_BUFFER);
     // The beta's head IMU is a different chip on a different bus, and `robotd` reads it
@@ -258,7 +259,7 @@ async fn main() -> std::process::ExitCode {
         );
         imu_status.elsewhere(robotd_params::HeadImuParams::reader(board));
         None
-    } else if !wanted || args.fake || args.sim.is_some() {
+    } else if !wanted || args.fake {
         // Said out loud, and said by the stream too: a subscriber gets this sentence instead of
         // frames, because "no samples" and "no BMI088 fitted" are different answers and only one
         // of them is somebody's mistake.
@@ -274,12 +275,17 @@ async fn main() -> std::process::ExitCode {
         let (imu_status, imu_frames, shutdown) =
             (imu_status.clone(), imu_frames.clone(), shutdown.clone());
         let bus = args.bus.clone();
+        let sim = args.sim.clone();
         let hz = args.imu_hz;
         Some(
             std::thread::Builder::new()
                 .name("head-imu".to_owned())
                 .spawn(move || {
-                    imu::imu_loop(bus.as_deref(), hz, &imu_status, &imu_frames, &shutdown)
+                    if let Some(addr) = sim {
+                        sim_imu::run(&addr, hz, &imu_status, &imu_frames, &shutdown);
+                    } else {
+                        imu::imu_loop(bus.as_deref(), hz, &imu_status, &imu_frames, &shutdown);
+                    }
                 })
                 .expect("spawn the head-imu thread"),
         )
@@ -493,7 +499,7 @@ fn sim_loop(
                     if !complained {
                         complained = true;
                         tracing::warn!(%addr, error = %e, "no simulated body; retrying");
-                        status.down(&format!("no simulated body at {addr}"));
+                        status.down(&format!("no simulated body at {addr}: {e}"));
                     }
                     sleep_unless_shutdown(period, shutdown);
                     continue;
@@ -501,7 +507,7 @@ fn sim_loop(
             }
         }
 
-        let (write, read) = link.as_mut().expect("just connected");
+        let (write, read, _) = link.as_mut().expect("just connected");
         let frame = write.write_all(b"{\"op\":\"tof\"}\n").and_then(|()| {
             let mut line = String::new();
             read.read_line(&mut line)?;
@@ -525,7 +531,8 @@ fn sim_loop(
                 });
             }
             Err(e) => {
-                tracing::debug!(error = %e, "lost the simulated body");
+                tracing::warn!(error = %e, "lost the simulated body");
+                status.down(&format!("simulated depth failed: {e}"));
                 link = None;
                 continue;
             }
@@ -534,7 +541,11 @@ fn sim_loop(
     }
 }
 
-type SimLink = (std::net::TcpStream, std::io::BufReader<std::net::TcpStream>);
+type SimLink = (
+    std::net::TcpStream,
+    std::io::BufReader<std::net::TcpStream>,
+    i128,
+);
 
 /// One connection to a simulated body, handshake included.
 fn connect_sim(addr: &str) -> std::io::Result<SimLink> {
@@ -546,7 +557,8 @@ fn connect_sim(addr: &str) -> std::io::Result<SimLink> {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let mut write = stream.try_clone()?;
     let mut read = std::io::BufReader::new(stream);
-    write.write_all(b"{\"op\":\"hello\",\"protocol\":1,\"joints\":15}\n")?;
+    let before = proto::clock::monotonic_ns();
+    write.write_all(b"{\"op\":\"hello\",\"protocol\":2,\"joints\":15}\n")?;
     let mut line = String::new();
     read.read_line(&mut line)?;
     if line.is_empty() {
@@ -554,7 +566,18 @@ fn connect_sim(addr: &str) -> std::io::Result<SimLink> {
             "the simulator hung up during the handshake",
         ));
     }
-    Ok((write, read))
+    let after = proto::clock::monotonic_ns();
+    let hello: serde_json::Value = serde_json::from_str(&line)?;
+    if hello["protocol"] != 2 {
+        return Err(std::io::Error::other(format!(
+            "simulator protocol mismatch: expected 2 (head IMU), received {hello}; update microduck_rl"
+        )));
+    }
+    let clock = hello["clock_ns"]
+        .as_u64()
+        .ok_or_else(|| std::io::Error::other("simulator protocol 2 handshake lacks clock_ns"))?;
+    let offset = i128::from(before / 2 + after / 2) - i128::from(clock);
+    Ok((write, read, offset))
 }
 
 /// What the simulator answers `{"op":"tof"}` with.

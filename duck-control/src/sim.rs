@@ -44,7 +44,7 @@ use crate::model::NUM_JOINTS;
 /// Checked in the handshake and reported by *both* numbers when it fails, because the two halves
 /// live in two repositories and "the simulator is too old" and "the daemon is too old" are the same
 /// symptom otherwise.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// How long to wait for the simulator to answer one request.
 ///
@@ -361,7 +361,7 @@ mod tests {
         (addr, handle)
     }
 
-    const HELLO: &str = r#"{"protocol":1}"#;
+    const HELLO: &str = r#"{"protocol":2}"#;
     // One line, because the protocol is one frame per line and a test fixture that wraps would be
     // testing the fixture.
     const SENSORS: &str = concat!(
@@ -436,7 +436,7 @@ mod tests {
             .read()
             .expect_err("a mismatch is fatal to the connection");
         let said = error.to_string();
-        assert!(said.contains("99") && said.contains("1"), "{said}");
+        assert!(said.contains("99") && said.contains("2"), "{said}");
         assert!(said.contains("different repositories"), "{said}");
     }
 
