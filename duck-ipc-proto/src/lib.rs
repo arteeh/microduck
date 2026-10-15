@@ -4083,9 +4083,9 @@ pub struct FramesState {
     /// tilted axes; this pose (sensor→trunk, from the same head FK) is how a consumer rotates
     /// them into the trunk/camera frame. Absent from a daemon predating it. (v24)
     ///
-    /// **The mount is the `zero3` HAT's BMI088.** The kinematic model has no `beta` face board
-    /// yet, so on a `beta` this pose does not describe its LSM6DSV16X until the model gains that
-    /// mount.
+    /// On zero3 this is the CAD HAT chip mount. On beta the reader has already rotated
+    /// vectors/quaternion into head axes; this pose uses those axes and a nominal
+    /// camera-coincident position until the face-board chip translation is calibrated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_imu: Option<PoseState>,
 }

@@ -21,6 +21,7 @@
 mod chorale;
 mod control;
 mod head_imu;
+mod head_imu_sim;
 mod idle_head;
 mod intents;
 mod leds;
@@ -1073,7 +1074,7 @@ async fn main() -> ExitCode {
 
     let intents = Arc::new(Intents::new());
 
-    start_head_imu(&state, &params, args.fake || args.sim.is_some());
+    start_head_imu(&state, &params, args.fake, args.sim.clone());
 
     // The real thing. `setsid` detaches the command from this process's cgroup, so the
     // poweroff proceeds while systemd is busy killing robotd itself.
@@ -3885,9 +3886,10 @@ async fn control_loop<T: RobotIo>(
                     gyro: sensors.imu.gyro,
                     quat: sensors.imu.quat,
                 }),
-                frames: Some(mapping::frames_at(mapping::head_joints_of(
-                    &sensors.positions,
-                ))),
+                frames: Some(mapping::frames_for_board(
+                    mapping::head_joints_of(&sensors.positions),
+                    state.board,
+                )),
                 skeleton: mapping::skeleton_at(&sensors.positions),
             });
         }
@@ -4218,7 +4220,12 @@ async fn claim_socket(socket_path: &Path) -> std::io::Result<(std::fs::File, Uni
 ///
 /// Only the `beta`'s is: on `zero3` the BMI088 is tofd's (it shares the HAT's bus with the ToF),
 /// and a subscriber here is told so rather than handed silence.
-fn start_head_imu(state: &Arc<RobotState>, params: &Params, no_hardware: bool) {
+fn start_head_imu(
+    state: &Arc<RobotState>,
+    params: &Params,
+    no_hardware: bool,
+    sim: Option<String>,
+) {
     use robotd_params::board::Board;
     let board = params.board.version;
     if board != Board::Beta {
@@ -4242,7 +4249,13 @@ fn start_head_imu(state: &Arc<RobotState>, params: &Params, no_hardware: bool) {
     let state = Arc::clone(state);
     let spawned = std::thread::Builder::new()
         .name("head-imu".into())
-        .spawn(move || head_imu::run(&state.head_imu, &state.head_imu_tx, &state.shutdown));
+        .spawn(move || {
+            if let Some(addr) = sim {
+                head_imu_sim::run(&addr, &state.head_imu, &state.head_imu_tx, &state.shutdown);
+            } else {
+                head_imu::run(&state.head_imu, &state.head_imu_tx, &state.shutdown);
+            }
+        });
     if let Err(e) = spawned {
         tracing::error!(error = %e, "cannot start the head IMU reader");
     }
@@ -5286,7 +5299,9 @@ fn dispatch(
         // than racing the first load.
         // The geometry the mapping fields of `robot.state` are stated in. Constant for the
         // life of the process, read from the same asset the FK runs on.
-        proto::Call::RobotModel => proto::Response::ok(Some(id), &mapping::model()),
+        proto::Call::RobotModel => {
+            proto::Response::ok(Some(id), &mapping::model_for_board(state.board))
+        }
 
         // The vet book, as of the loop's last handoff — at most a second behind.
         proto::Call::RobotVetbook => proto::Response::ok(Some(id), &state.vetbook.snapshot()),
@@ -5666,6 +5681,28 @@ mod mapping {
             tof: pose(FK.tof_in_trunk(head)),
             head_imu: FK.head_imu_in_trunk(head).map(pose),
         }
+    }
+
+    pub fn frames_for_board(
+        head: [f64; 4],
+        board: robotd_params::board::Board,
+    ) -> proto::FramesState {
+        let mut frames = frames_at(head);
+        if board == robotd_params::board::Board::Beta {
+            // The reader publishes head axes (to_head), not chip axes. The beta
+            // chip position is not in this CAD: camera-coincident nominal mount.
+            frames.head_imu = Some(proto::PoseState {
+                pos: frames.camera.pos,
+                quat: frames.tof.quat,
+            });
+        }
+        frames
+    }
+
+    pub fn model_for_board(board: robotd_params::board::Board) -> proto::ModelResult {
+        let mut model = model();
+        model.frames_at_zero = frames_for_board([0.0; 4], board);
+        model
     }
 
     pub fn model() -> proto::ModelResult {

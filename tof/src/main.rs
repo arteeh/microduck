@@ -519,6 +519,13 @@ fn sim_loop(
 
         match frame {
             Ok(depth) => {
+                if let Some(sensor) = &depth.sensor {
+                    match sensor.as_str() {
+                        "VL53L8CX" => status.up("VL53L8CX (sim)"),
+                        "VL53L5CX" => status.up("VL53L5CX (sim)"),
+                        _ => status.up("sim"),
+                    }
+                }
                 seq += 1;
                 let _ = frames.send(proto::TofFrame {
                     seq,
@@ -583,6 +590,8 @@ fn connect_sim(addr: &str) -> std::io::Result<SimLink> {
 /// What the simulator answers `{"op":"tof"}` with.
 #[derive(serde::Deserialize)]
 struct SimDepth {
+    #[serde(default)]
+    sensor: Option<String>,
     rows: u8,
     cols: u8,
     distance_mm: Vec<i16>,

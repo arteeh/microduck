@@ -126,7 +126,17 @@ the same Madgwick implementation/gain as the I²C path; no ground-truth quaterni
 Both repositories must be updated together. The body defaults to exact quantized/saturated IMU
 samples (`--imu-noise 0`); `--imu-noise 1` adds BMI088 datasheet noise and offsets, with a modelled
 60 s bias correlation. `--tof-noise 1` preserves the existing VL53L5CX noise, and `--seed` makes
-sensor noise repeatable. The beta face-board IMU is not simulated.
+sensor noise repeatable. `--board beta` selects the LSM6DSV16X path: `robotd --sim` drains 60 Hz game-rotation
+samples at 15 Hz, applies its real chip-to-head conversion, and `mediad` routes the stream to
+robotd on an independent subscription socket. The body's complementary gravity/gyro fusion
+is SFLP-like, not ST's unpublished algorithm. Beta ToF uses VL53L8CX's 45° side field and the
+0.12–3.5 m usable interval. The beta face-board translation is not in the CAD export: its
+simulated IMU is explicitly camera-coincident, with the measured chip orientation from
+`robotd/src/head_imu.rs`. This is not a physical beta calibration.
+
+`mediad --sim-camera-hfov DEGREES` publishes the renderer's exact horizontal pinhole field;
+unset preserves the original simulated geometry. It never supplies a GC2093 hardware guess.
+The GC2093 has no published family intrinsics and still requires real calibration.
 
 **A dead simulator is one bad tick.** MuJoCo compiles its model, so changing the number of ducks
 restarts it, and the ducks must live through that. A broken connection is an error returned to the

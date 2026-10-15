@@ -139,7 +139,7 @@ fn mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 /// A sample in the sensor's axes, put in the head's: vectors rotated by [`MOUNT`], and the
 /// orientation sensor→world turned into head→world (`q ⊗ MOUNT⁻¹`), as the body IMU's decoder
 /// does with its own mount.
-fn to_head(gyro: [f32; 3], accel: [f32; 3], quat: [f32; 4]) -> Sample {
+pub(super) fn to_head(gyro: [f32; 3], accel: [f32; 3], quat: [f32; 4]) -> Sample {
     let inverse = [MOUNT[0], -MOUNT[1], -MOUNT[2], -MOUNT[3]];
     Sample {
         gyro: rotate(MOUNT, gyro),
