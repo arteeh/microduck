@@ -391,7 +391,7 @@ async fn ask_where(port: u16) -> Option<[f64; 3]> {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
     write_half
-        .write_all(b"{\"op\":\"hello\",\"protocol\":1,\"joints\":15}\n")
+        .write_all(b"{\"op\":\"hello\",\"protocol\":2,\"joints\":15}\n")
         .await
         .ok()?;
     lines.next_line().await.ok()??;
