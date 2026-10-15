@@ -579,11 +579,18 @@ fn main() -> ExitCode {
         // nothing rather than a plausible wrong number. `mediad::camera` has the arithmetic.
         let intrinsics = if args.sim_camera.is_some() {
             // The MuJoCo twin renders a known field of view, so publish its exact geometry — twin
-            // recordings then self-describe (no `--calib` needed on the duckslam side).
-            match args.sim_camera_hfov {
+            // recordings then self-describe (no `--calib` needed on the duckslam side). A twin
+            // that carries `[media.intrinsics]` is standing in for a calibrated robot, and
+            // publishes them the way that robot would: a beta's GC2093 has no family solve, so
+            // that is the only geometry a real beta ever publishes.
+            let configured = media
+                .intrinsics
+                .as_ref()
+                .and_then(|measured| mediad::camera::Intrinsics::scaled_from(measured, width, height));
+            configured.or_else(|| match args.sim_camera_hfov {
                 Some(hfov) => mediad::camera::Intrinsics::sim_hfov(width, height, hfov),
                 None => mediad::camera::Intrinsics::sim(width, height),
-            }
+            })
         } else {
             mediad::camera::Intrinsics::published(
                 media.intrinsics.as_ref(),
