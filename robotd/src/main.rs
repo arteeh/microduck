@@ -5119,7 +5119,7 @@ fn dispatch(
         }
 
         // Gaze as a point: the IK runs here, against the same MJCF the policies train on,
-        // and the answer is the joints the head was sent to — so a client can hold the gaze
+        // and the answer is the policy offsets — so a client can hold the gaze
         // by resending them as `robot.head`, or notice `clamped` and move the robot instead.
         // Never refused: an aim is an intent like `robot.head`, and the closest-possible
         // gaze at a clamped target is still the most useful thing the head can do.
@@ -5127,8 +5127,10 @@ fn dispatch(
             static HEAD_FK: std::sync::LazyLock<kinematics::head::HeadFk> =
                 std::sync::LazyLock::new(kinematics::head::HeadFk::alpha);
             let gaze = HEAD_FK.look_at([p.x, p.y, p.z], p.neck_pitch);
-            intents.set_head(gaze.joints);
-            let [neck_pitch, head_pitch, head_yaw, head_roll] = gaze.joints;
+            // IK solves absolute angles; head commands in the trained policy are home-relative.
+            let head = std::array::from_fn(|i| gaze.joints[i] - DEFAULT_POSITION[5 + i]);
+            intents.set_head(head);
+            let [neck_pitch, head_pitch, head_yaw, head_roll] = head;
             proto::Response::ok(
                 Some(id),
                 &proto::LookResult {
@@ -6651,7 +6653,10 @@ mod tests {
 
         assert!(!look.clamped, "an ahead-left point is well inside reach");
         assert!(look.head.head_yaw > 0.2, "left target, leftward yaw");
-        assert!((look.head.neck_pitch - 0.1).abs() < 1e-9, "posture is held");
+        assert!(
+            (look.head.neck_pitch + DEFAULT_POSITION[5] - 0.1).abs() < 1e-9,
+            "posture is held"
+        );
 
         let sent = intents.snapshot().command.head;
         assert_eq!(

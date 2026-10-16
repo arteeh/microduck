@@ -470,7 +470,13 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// laser sweep, nearest object — merged into the vet book by `robotd`, which owns it. The book
 /// gains three maps for them ([`vetbook::Life::tallies`], `highs`, `lows`), additive: an older
 /// book loads with them empty. A new route: a `robotd` predating it answers METHOD_NOT_FOUND.
-pub const API_VERSION: u32 = 44;
+///
+/// # v45 — gaze commands use the policy's home-relative angles
+///
+/// [`method::ROBOT_LOOK`] now converts absolute IK angles to the home-relative offsets
+/// consumed by the policy and [`method::ROBOT_HEAD`]. `result.head` remains directly
+/// resendable. Install the updated daemon on the robot; the wire shape is unchanged.
+pub const API_VERSION: u32 = 45;
 
 /// The observation width every policy this robot family runs is built against.
 ///
@@ -2269,7 +2275,8 @@ pub struct MoveParams {
     pub vyaw: f64,
 }
 
-/// Head joint targets, radians. Continuous intent — see [`method::ROBOT_HEAD`].
+/// Head joint offsets from the policy home pose, radians. Continuous intent — see
+/// [`method::ROBOT_HEAD`]. Zero holds the home command, not zero absolute joint angles.
 ///
 /// Joint-space rather than a gaze direction. Both forms are wanted eventually and both will
 /// be exposed; this is the one the gamepad and calibration produce, and it is what the
@@ -2287,7 +2294,8 @@ pub struct HeadParams {
 /// [`HeadParams`]' doc promised: the daemon solves the IK against its own MJCF model, so a
 /// client never has to know which way a positive head_yaw turns.
 ///
-/// `neck_pitch` is posture, not aim — the IK holds it and aims around it. Defaults to 0.
+/// `neck_pitch` is absolute posture, not aim — the IK holds it and aims around it.
+/// Defaults to 0. The result converts absolute IK angles to home-relative head commands.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LookParams {
@@ -2300,7 +2308,7 @@ pub struct LookParams {
     pub neck_pitch: f64,
 }
 
-/// Answer to [`Call::RobotLook`]: the joints the head was sent to.
+/// Answer to [`Call::RobotLook`]: home-relative joint commands for the gaze.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LookResult {
     /// What was handed to the same path `robot.head` feeds — resend these to hold the gaze.
