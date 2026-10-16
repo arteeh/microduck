@@ -438,7 +438,12 @@ Three things about it are individually plausible and wrong:
 2. **Head targets ride in the command and are not added on top of the policy output.** The
    prototype does both in different modes and gates the post-hoc addition behind
    `if !new_cmd_obs`, commented "head\_offsets are a COMMAND fed via the obs vector instead —
-   don't double-add it here". Doing both bends the head twice.
+   don't double-add it here". Doing both bends the head twice. These commands are
+   **offsets from the policy home joints**, including 0.3491 rad for both pitch joints.
+   `robot.look` solves absolute IK angles, subtracts those home angles, and returns the
+   offsets accepted by `robot.head`. API 45 fixes that conversion; install the updated
+   daemon on the robot as well as in the sim. Clients resend `result.head` unchanged.
+   `robot.look.neck_pitch` remains an absolute posture angle.
 3. **The body block is ordered `z, roll, pitch`** — not `z, pitch, roll`. Swapping the last
    two tilts the robot sideways when asked to lean forward.
 
