@@ -40,6 +40,9 @@ pub fn run(
     }
 }
 
+/// Handshakes to time the body's clock against ours; the quickest one counts.
+const HANDSHAKES: usize = 8;
+
 fn stream(
     addr: &str,
     status: &HeadImuStatus,
@@ -55,19 +58,33 @@ fn stream(
     socket.set_write_timeout(Some(Duration::from_millis(500)))?;
     let mut write = socket.try_clone()?;
     let mut read = BufReader::new(socket);
-    let before = proto::clock::monotonic_ns();
-    writeln!(write, "{{\"op\":\"hello\",\"protocol\":2,\"joints\":15}}")?;
+    // The body's clock against ours, from the quickest of a few handshakes: one answer can wait
+    // tens of milliseconds behind the body's physics, and half of that wait would then shift
+    // every head IMU stamp for the whole run (seen as a 25 ms late head in one sim session).
     let mut line = String::new();
-    read.read_line(&mut line)?;
-    let after = proto::clock::monotonic_ns();
-    let hello: serde_json::Value = serde_json::from_str(&line)?;
-    if hello["protocol"] != 2 || hello["board"] != "beta" {
-        return Err(format!("expected body protocol 2, board beta; received {hello}; update microduck_rl and start --board beta").into());
+    let mut best: Option<(u64, i128)> = None;
+    for _ in 0..HANDSHAKES {
+        let before = proto::clock::monotonic_ns();
+        writeln!(write, "{{\"op\":\"hello\",\"protocol\":2,\"joints\":15}}")?;
+        line.clear();
+        read.read_line(&mut line)?;
+        let after = proto::clock::monotonic_ns();
+        let hello: serde_json::Value = serde_json::from_str(&line)?;
+        if hello["protocol"] != 2 || hello["board"] != "beta" {
+            return Err(format!("expected body protocol 2, board beta; received {hello}; update microduck_rl and start --board beta").into());
+        }
+        let clock = hello["clock_ns"]
+            .as_u64()
+            .ok_or("body handshake lacks clock_ns")?;
+        let round_trip = after.saturating_sub(before);
+        if best.is_none_or(|(quickest, _)| round_trip < quickest) {
+            best = Some((
+                round_trip,
+                i128::from(before / 2 + after / 2) - i128::from(clock),
+            ));
+        }
     }
-    let clock = hello["clock_ns"]
-        .as_u64()
-        .ok_or("body handshake lacks clock_ns")?;
-    let offset = i128::from(before / 2 + after / 2) - i128::from(clock);
+    let offset = best.map_or(0, |(_, offset)| offset);
     let mut cursor = 0;
     status.found("LSM6DSV16X");
     while !shutdown.load(Ordering::Acquire) {
