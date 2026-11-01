@@ -619,6 +619,7 @@ fn main() -> ExitCode {
             height,
             rotate,
             intrinsics,
+            rtp_zero_ns: mediad::pipeline::rtp_zero_ns(&_pipeline),
         };
 
         // Frames out to a WebSocket this robot dials, when something asks for them. Built here
