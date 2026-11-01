@@ -497,7 +497,14 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// [`method::ROBOT_LOOK`] now converts absolute IK angles to the home-relative offsets
 /// consumed by the policy and [`method::ROBOT_HEAD`]. `result.head` remains directly
 /// resendable. Install the updated daemon on the robot; the wire shape is unchanged.
-pub const API_VERSION: u32 = 48;
+///
+/// # v49 — up to four ToF targets per zone
+///
+/// [`TofFrame`] carries [`TofFrame::targets`] slots per zone, strongest first: a zone straddling
+/// an edge reports the near surface and the one behind it (at least 600 mm apart, ST's limit)
+/// instead of whichever returned more light. `distance_mm` and `status` are `targets` times
+/// longer; a reader of a v48 frame (no `targets`) reads one slot per zone.
+pub const API_VERSION: u32 = 49;
 
 /// The observation width every policy this robot family runs is built against.
 ///
@@ -5287,7 +5294,7 @@ pub struct TofStreamResult {
     pub hz: u8,
 }
 
-/// One 8×8 depth frame — a [`method::TOF_FRAME`] notification.
+/// One 8×8 depth frame of up to four targets per zone — a [`method::TOF_FRAME`] notification.
 ///
 /// **Millimetres and ST's raw status, not metres.** JSON has no NaN, so a
 /// distance-only frame would have to encode "no measurement" as a magic number;
@@ -5296,7 +5303,8 @@ pub struct TofStreamResult {
 /// crate's `Frame::zone` is the interpretation, and consumers should use it
 /// rather than re-deriving the thresholds.
 ///
-/// `distance_mm` and `status` are parallel and row-major, `rows × cols` long.
+/// `distance_mm` and `status` are parallel, [`TofFrame::targets`] slots per zone, zones
+/// row-major: `rows × cols × targets` long.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TofFrame {
@@ -5312,8 +5320,25 @@ pub struct TofFrame {
     pub t_ns: u64,
     pub rows: u8,
     pub cols: u8,
+    /// Target slots per zone, strongest target first (the sensor's default order); a zone
+    /// that found fewer fills the rest with status 255. Zero, from a sender predating it
+    /// (v49), means one. Several targets in a zone are surfaces at least 600 mm apart along
+    /// it — nearer ones merge into one target, status 9 (ST UM2884/UM3109 §4.10, table 4).
+    pub targets: u8,
     pub distance_mm: Vec<i16>,
     pub status: Vec<u8>,
+}
+
+impl TofFrame {
+    /// Each zone's strongest target, row-major, `rows × cols` long: what a one-target sensor
+    /// reports, for a consumer that reads one range per zone.
+    pub fn strongest(&self) -> (Vec<i16>, Vec<u8>) {
+        let slots = usize::from(self.targets.max(1));
+        (
+            self.distance_mm.iter().step_by(slots).copied().collect(),
+            self.status.iter().step_by(slots).copied().collect(),
+        )
+    }
 }
 
 /// Answer to [`Call::HeadImuStream`]. Describes the head IMU rather than merely accepting, like

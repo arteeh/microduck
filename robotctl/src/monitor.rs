@@ -814,7 +814,10 @@ const TOF_STATUS_NO_TARGET: u8 = 255;
 /// Kept in step deliberately rather than shared: the wire format is the contract
 /// between the two, and a `robotctl` that linked the driver crate to read a
 /// number would be a client that cannot be built without a C toolchain.
+///
+/// By the zone's strongest target, slot 0 of its `targets`.
 fn frame_zone(frame: &proto::TofFrame, index: usize) -> tof_zone::Zone {
+    let index = index * usize::from(frame.targets.max(1));
     let status = frame
         .status
         .get(index)
@@ -2598,13 +2601,13 @@ impl View {
         // measurement, and the range of what it measured. A grid of numbers
         // without those two is a grid nobody can sanity-check at a glance.
         if let Some(tof) = self.tof.as_ref() {
-            let ranges: Vec<f32> = (0..tof.distance_mm.len())
+            let total = usize::from(tof.rows) * usize::from(tof.cols);
+            let ranges: Vec<f32> = (0..total)
                 .filter_map(|i| match frame_zone(tof, i) {
                     tof_zone::Zone::Range(m) => Some(m),
                     _ => None,
                 })
                 .collect();
-            let total = tof.distance_mm.len();
             title.push(Span::raw(format!("· {}/{total} ranged ", ranges.len())));
             if let (Some(near), Some(far)) = (
                 ranges.iter().copied().reduce(f32::min),
@@ -4486,6 +4489,7 @@ mod tests {
             t_ns: 0,
             rows: 8,
             cols: 8,
+            targets: 1,
             distance_mm,
             status,
         }

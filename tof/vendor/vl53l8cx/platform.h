@@ -29,18 +29,25 @@ typedef struct
     uint8_t spi;
 } VL53L8CX_Platform;
 
-#define VL53L8CX_NB_TARGET_PER_ZONE 1U
+/*
+ * Four targets per zone, ST's maximum (UM2884/UM3109 §4.10): a zone straddling
+ * an edge reports the near surface and the one behind it when they are at
+ * least 600 mm apart, instead of whichever returned more light. Must match
+ * `tof::TARGETS`.
+ */
+#define VL53L8CX_NB_TARGET_PER_ZONE 4U
 
 /*
- * Output trim: `tof.frame` carries distance + target_status, so every other
- * output block is disabled here — the sensor firmware then does not even emit
- * them, shrinking each 8x8 readout from ~1.4 kB to ~250 B of bus traffic. At
- * 15 Hz that is ~5% of a 400 kHz bus, which is what leaves room for the codec
- * sharing it. Re-enabling a block means widening the wire format to match.
+ * Output trim: `tof.frame` carries distance + target_status per target, and
+ * the shim needs nb_target_detected to tell a target from an empty slot, so
+ * every other output block is disabled here — the sensor firmware then does
+ * not even emit them. Four targets make each 8x8 readout ~850 B of bus traffic
+ * (~250 B with one): at 15 Hz ~17% of a 400 kHz bus, against ~5%, which the
+ * codec sharing the bus on a zero3 has to live with. Re-enabling a block means
+ * widening the wire format to match.
  */
 #define VL53L8CX_DISABLE_AMBIENT_PER_SPAD
 #define VL53L8CX_DISABLE_NB_SPADS_ENABLED
-#define VL53L8CX_DISABLE_NB_TARGET_DETECTED
 #define VL53L8CX_DISABLE_SIGNAL_PER_SPAD
 #define VL53L8CX_DISABLE_RANGE_SIGMA_MM
 /* VL53L8CX_DISABLE_DISTANCE_MM      — kept */

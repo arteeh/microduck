@@ -375,6 +375,7 @@ fn sensor_loop(
                                     t_ns: proto::clock::monotonic_ns(),
                                     rows: frame.rows,
                                     cols: frame.cols,
+                                    targets: frame.targets,
                                     distance_mm: frame.distance_mm,
                                     status: frame.status,
                                 });
@@ -458,6 +459,7 @@ fn fake_loop(
             t_ns: proto::clock::monotonic_ns(),
             rows: tof::ROWS as u8,
             cols: tof::COLS as u8,
+            targets: 1,
             distance_mm,
             status: zone_status,
         });
@@ -533,6 +535,7 @@ fn sim_loop(
                     t_ns: proto::clock::monotonic_ns(),
                     rows: depth.rows,
                     cols: depth.cols,
+                    targets: depth.targets,
                     distance_mm: depth.distance_mm,
                     status: depth.status,
                 });
@@ -594,6 +597,7 @@ struct SimDepth {
     sensor: Option<String>,
     rows: u8,
     cols: u8,
+    targets: u8,
     distance_mm: Vec<i16>,
     status: Vec<u8>,
 }
@@ -1144,6 +1148,7 @@ fn tally_frame(
     let frame = tof::Frame {
         rows: frame.rows,
         cols: frame.cols,
+        targets: frame.targets,
         distance_mm: frame.distance_mm,
         status: frame.status,
     };

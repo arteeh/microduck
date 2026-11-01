@@ -269,9 +269,12 @@ fn stream_frames(socket: &Path, slot: &ArcSwapOption<Frame>) -> Result<(), Strin
         else {
             continue;
         };
+        // The hand is in front of whatever else a zone sees, and the strongest return
+        // there: one target per zone, as before the sensor reported several.
+        let (distance_mm, status) = wire.strongest();
         slot.store(Some(Arc::new(Frame {
-            distance_mm: wire.distance_mm,
-            status: wire.status,
+            distance_mm,
+            status,
             at: Instant::now(),
         })));
     }

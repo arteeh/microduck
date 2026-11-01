@@ -34,7 +34,9 @@
 //!
 //! ## What a frame is, and is not
 //!
-//! Raw zone distances and ST's per-zone status, in the sensor's own frame. There
+//! Raw target distances and ST's per-target status, up to [`TARGETS`] per zone
+//! (the farthest two surfaces in a zone at least 600 mm apart both come back:
+//! a table edge and the wall behind it), in the sensor's own frame. There
 //! is **no reprojection**: turning zones into directions in the robot's frame
 //! needs the head's forward kinematics, which this daemon does not have and does
 //! not fake. Consumers that want geometry (mapping, obstacle avoidance) will
@@ -52,15 +54,21 @@ pub use sensor::{Generation, Sensor};
 pub const ROWS: usize = 8;
 pub const COLS: usize = 8;
 pub const ZONES: usize = ROWS * COLS;
+/// Targets per zone: ST's maximum (UM2884/UM3109 §4.10), set in each
+/// `vendor/*/platform.h`. Slots are strongest first, the ULD's default target
+/// order; a zone that found fewer fills the rest with status 255.
+pub const TARGETS: usize = 4;
 
 /// One scan, as the driver produces it.
 ///
-/// `distance_mm` and `status` are parallel, row-major, `ZONES` long. A distance
-/// is only meaningful where the status says so — see [`Zone`].
+/// `distance_mm` and `status` are parallel, `targets` slots per zone, zones
+/// row-major: `rows × cols × targets` long. A distance is only meaningful where
+/// the status says so — see [`Zone`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub rows: u8,
     pub cols: u8,
+    pub targets: u8,
     pub distance_mm: Vec<i16>,
     pub status: Vec<u8>,
 }
@@ -74,7 +82,7 @@ pub struct Frame {
 pub enum Zone {
     /// A measurement, in metres. Status 5 (valid) or 9 (valid, large pulse).
     Range(f32),
-    /// Status 255: the sensor looked and found nothing in range. Empty space.
+    /// Status 255: the sensor looked and found nothing (more) in range.
     NoTarget,
     /// Any other status: the measurement failed. Says nothing about what is out
     /// there — carries the raw code, because the codes mean specific things to
@@ -83,16 +91,18 @@ pub enum Zone {
 }
 
 /// Status codes ST documents as a usable range: valid, and valid with a large
-/// pulse (~50% confidence, which the sensor still stands behind).
+/// pulse — "may be due to a merged target", two surfaces closer than 600 mm
+/// reported as one (~50% confidence, which the sensor still stands behind).
 pub const STATUS_VALID: [u8; 2] = [5, 9];
 /// Status code for "measured, nothing there".
 pub const STATUS_NO_TARGET: u8 = 255;
 
 impl Frame {
-    /// The zone at `index`, interpreted.
-    pub fn zone(&self, index: usize) -> Zone {
-        let status = self.status.get(index).copied().unwrap_or(STATUS_NO_TARGET);
-        let distance = self.distance_mm.get(index).copied().unwrap_or(0);
+    /// Target `slot` of the zone at `index`, interpreted.
+    pub fn target(&self, index: usize, slot: usize) -> Zone {
+        let at = index * usize::from(self.targets.max(1)) + slot;
+        let status = self.status.get(at).copied().unwrap_or(STATUS_NO_TARGET);
+        let distance = self.distance_mm.get(at).copied().unwrap_or(0);
         if STATUS_VALID.contains(&status) {
             // Negative distances come back from the sensor occasionally on a
             // failed convergence; they are not a range whatever the status says.
@@ -107,12 +117,17 @@ impl Frame {
         Zone::Unusable(status)
     }
 
-    /// Every zone, row-major, interpreted.
-    pub fn zones(&self) -> impl Iterator<Item = Zone> + '_ {
-        (0..self.distance_mm.len()).map(|i| self.zone(i))
+    /// The zone at `index` by its strongest target, interpreted.
+    pub fn zone(&self, index: usize) -> Zone {
+        self.target(index, 0)
     }
 
-    /// How many zones carry a usable range. The one number that says whether the
+    /// Every zone by its strongest target, row-major, interpreted.
+    pub fn zones(&self) -> impl Iterator<Item = Zone> + '_ {
+        (0..usize::from(self.rows) * usize::from(self.cols)).map(|i| self.zone(i))
+    }
+
+    /// How many zones carry a usable strongest range. The one number that says whether the
     /// sensor is seeing anything at all.
     pub fn valid_count(&self) -> usize {
         self.zones().filter(|z| matches!(z, Zone::Range(_))).count()
@@ -127,6 +142,7 @@ mod tests {
         Frame {
             rows: ROWS as u8,
             cols: COLS as u8,
+            targets: 1,
             distance_mm: vec![distance_mm; ZONES],
             status: vec![status; ZONES],
         }
@@ -162,6 +178,7 @@ mod tests {
         let ragged = Frame {
             rows: ROWS as u8,
             cols: COLS as u8,
+            targets: 1,
             distance_mm: vec![1000; 3],
             status: vec![5; 2],
         };

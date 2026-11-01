@@ -2,8 +2,8 @@
 //!
 //! Every call here is one FFI call into a `vendor/*/shim.c`, whose whole surface
 //! is scalars and two 64-entry arrays. The unsafety is therefore confined to this
-//! file and is all of one shape — "the C writes 64 entries into a buffer I sized
-//! at 64" — rather than spread across a hand-mirrored `repr(C)` struct.
+//! file and is all of one shape — "the C writes 256 entries into a buffer I sized
+//! at 256" — rather than spread across a hand-mirrored `repr(C)` struct.
 //!
 //! **Two generations, one interface.** A VL53L5CX and a VL53L8CX are the same
 //! package, the same register map and the same 8×8 output, with different
@@ -28,7 +28,7 @@ use anyhow::{Context, anyhow};
 use anyhow::{Result, bail};
 
 #[cfg(target_os = "linux")]
-use crate::{COLS, ROWS, ZONES};
+use crate::{COLS, ROWS, TARGETS, ZONES};
 use crate::{Frame, Link};
 
 #[cfg(target_os = "linux")]
@@ -214,10 +214,15 @@ impl Driver {
         }
     }
 
-    fn get_frame(self, distance_mm: &mut [i16; ZONES], status: &mut [u8; ZONES]) -> i32 {
-        // SAFETY: both pointers are to arrays of exactly ZONES (64) entries,
-        // which is what the shims' `memcpy`s write — the resolution is pinned to
-        // 8×8 by `start`, and both ULDs' results blocks are 64 wide regardless.
+    fn get_frame(
+        self,
+        distance_mm: &mut [i16; ZONES * TARGETS],
+        status: &mut [u8; ZONES * TARGETS],
+    ) -> i32 {
+        // SAFETY: both pointers are to arrays of exactly ZONES × TARGETS (256)
+        // entries, which is what the shims write — the resolution is pinned to
+        // 8×8 by `start`, and both ULDs' results blocks are 64 × TARGETS wide
+        // regardless (`*_NB_TARGET_PER_ZONE` in `vendor/*/platform.h`).
         unsafe {
             match self {
                 Self::L5 => vl5_get_frame(distance_mm.as_mut_ptr(), status.as_mut_ptr()),
@@ -347,10 +352,10 @@ impl Sensor {
         }
     }
 
-    /// Read the frame the sensor has ready.
+    /// Read the frame the sensor has ready: up to [`TARGETS`] per zone.
     pub fn read_frame(&mut self) -> Result<Frame> {
-        let mut distance_mm = [0i16; ZONES];
-        let mut status = [0u8; ZONES];
+        let mut distance_mm = [0i16; ZONES * TARGETS];
+        let mut status = [0u8; ZONES * TARGETS];
         let rc = self.driver.get_frame(&mut distance_mm, &mut status);
         if rc != 0 {
             bail!("reading the frame failed (ULD status {rc})");
@@ -358,6 +363,7 @@ impl Sensor {
         Ok(Frame {
             rows: ROWS as u8,
             cols: COLS as u8,
+            targets: TARGETS as u8,
             distance_mm: distance_mm.to_vec(),
             status: status.to_vec(),
         })

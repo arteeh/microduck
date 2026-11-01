@@ -97,12 +97,21 @@ int vl8_data_ready(void)
     return ready ? 1 : 0;
 }
 
-/* Copies the 8x8 frame out. dist_mm and status must hold 64 entries each. */
+/* Copies the 8x8 frame out, VL53L8CX_NB_TARGET_PER_ZONE slots per zone, zone-major
+ * and strongest first: dist_mm and status must hold 64 * that many entries each.
+ * Slots past the zone's nb_target_detected hold stale data in the ULD's block,
+ * so they go out as status 255 (no target), distance 0. */
 int vl8_get_frame(int16_t *dist_mm, uint8_t *status)
 {
     uint8_t s = vl53l8cx_get_ranging_data(&dev, &results);
     if (s) return (int)s;
-    memcpy(dist_mm, results.distance_mm, 64 * sizeof(int16_t));
-    memcpy(status, results.target_status, 64);
+    for (int zone = 0; zone < 64; zone++) {
+        for (int t = 0; t < (int)VL53L8CX_NB_TARGET_PER_ZONE; t++) {
+            int i = zone * (int)VL53L8CX_NB_TARGET_PER_ZONE + t;
+            int found = t < results.nb_target_detected[zone];
+            dist_mm[i] = found ? results.distance_mm[i] : 0;
+            status[i] = found ? results.target_status[i] : 255;
+        }
+    }
     return 0;
 }
