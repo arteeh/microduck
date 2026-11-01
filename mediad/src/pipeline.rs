@@ -461,7 +461,12 @@ pub fn start(
             src
         }
         #[cfg(target_os = "linux")]
-        Source::Camera(camera) => camera_source(camera, fps)?,
+        Source::Camera(camera) => {
+            // `v4l2src` times each buffer by the driver's own V4L2 timestamp (CLOCK_MONOTONIC on
+            // rkisp), moved onto the pipeline clock: the capture, not when it was read.
+            crate::session::FRAMES_STAMPED.store(true, std::sync::atomic::Ordering::Relaxed);
+            camera_source(camera, fps)?
+        }
         // Not "unsupported": `[media] camera = true` off a robot is a config file copied from one,
         // and the fix is to name whichever of the other two sources was meant.
         #[cfg(not(target_os = "linux"))]
@@ -629,6 +634,7 @@ pub fn start(
     // regression rather than an improvement: `profile` defaults to High and `header-mode` to
     // first-frame, and both matter — see `wire_encoder_setup`.
     wire_encoder_setup(&sink)?;
+    wire_rtp_clock(&sink);
 
     let consumers: Consumers = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let (channels_tx, channels_rx) = mpsc::channel::<Channel>(4);
@@ -1429,20 +1435,50 @@ fn sim_source(addr: &str, width: u32, height: u32, fps: u32) -> Result<gst::Elem
     Ok(src.upcast())
 }
 
+/// The tag a simulated camera's frame socket uses to ask for, and agree to, stamped frames.
+const SIM_STAMPS: &[u8; 4] = b"ITS1";
+
 /// Length-prefixed frames from the simulator into an `appsrc`, until it stops or the frames stop.
 fn read_frames(addr: &str, expected: usize, src: &gst_app::AppSrc) -> std::io::Result<()> {
     use std::io::Read;
 
     let stream = std::net::TcpStream::connect(addr)?;
     stream.set_nodelay(true)?;
+    // Ask for each frame's exposure time. A simulator that knows the question answers with the same
+    // four bytes and then sends `[len u32][exposed u64 CLOCK_MONOTONIC ns][frame]`; an older one
+    // ignores it and sends `[len u32][frame]`, whose first four bytes are a frame size and never
+    // this tag.
+    {
+        use std::io::Write;
+        (&stream).write_all(SIM_STAMPS)?;
+    }
     let mut reader = std::io::BufReader::new(stream);
     let mut header = [0u8; 4];
+    let mut stamp = [0u8; 8];
     let mut frame = vec![0u8; expected];
-    tracing::info!(%addr, "the simulated camera is feeding the pipeline");
+    reader.read_exact(&mut header)?;
+    let stamped = header == *SIM_STAMPS;
+    crate::session::FRAMES_STAMPED.store(stamped, std::sync::atomic::Ordering::Relaxed);
+    if stamped {
+        reader.read_exact(&mut header)?;
+    }
+    tracing::info!(%addr, stamped, "the simulated camera is feeding the pipeline");
+    let mut last_pts = None;
+    let mut first = true;
 
     loop {
-        reader.read_exact(&mut header)?;
+        // The first frame's length was read above; every later one here.
+        if !first {
+            reader.read_exact(&mut header)?;
+        }
+        first = false;
         let len = u32::from_le_bytes(header) as usize;
+        let exposed = if stamped {
+            reader.read_exact(&mut stamp)?;
+            u64::from_le_bytes(stamp)
+        } else {
+            0
+        };
         // A frame of the wrong size means the two ends disagree about the geometry, and pushing it
         // would be a picture nobody can read. Said once, loudly, rather than a stream of noise.
         if len != expected {
@@ -1458,6 +1494,21 @@ fn read_frames(addr: &str, expected: usize, src: &gst_app::AppSrc) -> std::io::R
             .map_writable()
             .map_err(std::io::Error::other)?
             .copy_from_slice(&frame);
+        // The exposure as this buffer's time, so the RTP timestamp carries it (`wire_rtp_clock`).
+        // A frame from before the pipeline started, or one not after the last (the simulator
+        // restarted its clock), keeps `do-timestamp`'s arrival time instead.
+        let pts = src
+            .base_time()
+            .filter(|_| exposed > 0)
+            .and_then(|base| exposed.checked_sub(base.nseconds()))
+            .map(gst::ClockTime::from_nseconds)
+            .filter(|pts| last_pts.is_none_or(|last| *pts > last));
+        if let Some(pts) = pts {
+            let b = buffer.get_mut().expect("a fresh buffer is writable");
+            b.set_pts(pts);
+            b.set_dts(pts);
+        }
+        last_pts = Some(pts.or(last_pts).unwrap_or(gst::ClockTime::ZERO));
         if src.push_buffer(buffer).is_err() {
             return Ok(()); // the pipeline is gone
         }
@@ -1836,6 +1887,64 @@ fn set_congestion_control(sink: &gst::Element, mode: robotd_params::CongestionCo
 ///
 /// Returns `false`, so `webrtcsink` still applies its own configuration on top: it owns the
 /// bitrate now, and congestion control moving it is the reason for this whole arrangement.
+/// Every payloader starts its RTP timestamps at zero instead of a random offset.
+///
+/// **So a peer can turn a frame's RTP timestamp back into the moment it was captured.** A
+/// payloader stamps each packet with the buffer's running time at the RTP clock rate plus
+/// `timestamp-offset`; with the offset at zero, `zero_ns + rtp * 1e9 / 90000` is the buffer's
+/// `CLOCK_MONOTONIC` time, `zero_ns` being the pipeline's base time ([`rtp_zero_ns`]), the same
+/// clock `robot.state` and `tof.frame` stamp with. WebRTC gives a receiver the RTP timestamp of
+/// every frame and nothing else about its timing, so without this a consumer can only use the
+/// moment a frame arrived, which is tens of milliseconds and a varying amount after it was taken
+/// (encoding, the link, decoding). RFC 3550 asks for a random offset against known-plaintext
+/// attacks on encrypted RTP; SRTP's keystream does not depend on it, and `webrtcsink` itself sets
+/// this offset deterministically when it signals its clock (RFC 7273).
+fn wire_rtp_clock(sink: &gst::Element) {
+    if glib::subclass::signal::SignalId::lookup("payloader-setup", sink.type_()).is_none() {
+        tracing::warn!(
+            "webrtcsink has no payloader-setup signal: RTP timestamps keep a random offset and \
+             peers cannot tell when a frame was captured. Everything else is unaffected."
+        );
+        return;
+    }
+    sink.connect("payloader-setup", false, |values| {
+        // (webrtcsink, consumer_id, pad_name, payloader).
+        if let Some(payloader) = values.get(3).and_then(|v| v.get::<gst::Element>().ok())
+            && payloader.has_property("timestamp-offset")
+        {
+            payloader.set_property("timestamp-offset", 0u32);
+        }
+        // Not "configured": webrtcsink's own handler still runs (mtu and the like).
+        Some(false.to_value())
+    });
+}
+
+/// `CLOCK_MONOTONIC` nanoseconds at RTP timestamp zero, once the pipeline plays: its base time.
+///
+/// `None` (and peers told nothing) unless the pipeline runs on the system's monotonic clock, which
+/// is what makes a running time a `CLOCK_MONOTONIC` time; a pipeline that picked another clock
+/// would publish a number that looks right and is not.
+pub fn rtp_zero_ns(pipeline: &gst::Pipeline) -> Option<u64> {
+    let (_, state, _) = pipeline.state(gst::ClockTime::from_seconds(5));
+    if state != gst::State::Playing {
+        tracing::warn!(
+            ?state,
+            "the pipeline is not playing yet; frames carry no capture time"
+        );
+        return None;
+    }
+    let clock = pipeline.clock()?;
+    let monotonic = clock
+        .downcast_ref::<gst::SystemClock>()
+        .map(|system| system.property::<gst::ClockType>("clock-type") == gst::ClockType::Monotonic)
+        .unwrap_or(false);
+    if !monotonic {
+        tracing::warn!("the pipeline clock is not CLOCK_MONOTONIC; frames carry no capture time");
+        return None;
+    }
+    pipeline.base_time().map(|t| t.nseconds())
+}
+
 fn wire_encoder_setup(sink: &gst::Element) -> Result<()> {
     if glib::subclass::signal::SignalId::lookup("encoder-setup", sink.type_()).is_none() {
         return Err(anyhow!(

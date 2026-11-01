@@ -51,7 +51,19 @@ pub struct Video {
     /// `crate::camera` knows the field of view of, which is a robot that should not be believed
     /// rather than one to guess about.
     pub intrinsics: Option<crate::camera::Intrinsics>,
+    /// `CLOCK_MONOTONIC` nanoseconds at RTP timestamp zero ([`crate::pipeline::rtp_zero_ns`]):
+    /// with it a peer turns any frame's RTP timestamp into the time it was captured.
+    pub rtp_zero_ns: Option<u64>,
 }
+
+/// Whether the frames carry the moment they were captured rather than the moment `mediad` got
+/// them: a `v4l2src` camera, or a simulated camera that sends its exposure with each frame. Read
+/// when a peer asks `media.video`, since the simulator says so only once its socket is up.
+pub static FRAMES_STAMPED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The RTP clock rate of video, fixed by RFC 6184 for H.264.
+pub const RTP_VIDEO_CLOCK_RATE: u64 = 90_000;
 
 /// The methods a peer asks with. Answered here rather than routed: no service owns them.
 const VIDEO_METHOD: &str = "media.video";
@@ -109,6 +121,17 @@ fn video_params(video: &Video) -> serde_json::Value {
     // it must calibrate, where one reading `null` has to be told what that meant.
     if let Some(intrinsics) = &video.intrinsics {
         params["intrinsics"] = serde_json::to_value(intrinsics).expect("intrinsics serialise");
+    }
+    // A frame's time is `zero_ns + rtp * 1e9 / clock_rate` (mod 2^32 of RTP), CLOCK_MONOTONIC.
+    // `stamps` says what that time is: `capture` when the source stamps its own frames (a V4L2
+    // camera, a simulator that sends exposures), `arrival` when it is when `mediad` got them.
+    if let Some(zero_ns) = video.rtp_zero_ns {
+        let stamped = FRAMES_STAMPED.load(std::sync::atomic::Ordering::Relaxed);
+        params["rtp"] = serde_json::json!({
+            "zero_ns": zero_ns,
+            "clock_rate": RTP_VIDEO_CLOCK_RATE,
+            "stamps": if stamped { "capture" } else { "arrival" },
+        });
     }
     params
 }
@@ -386,6 +409,7 @@ mod tests {
                         1280,
                         720,
                     ),
+                    rtp_zero_ns: None,
                 },
                 // A streamer whose encoder produces nothing, which is all this needs: the tests
                 // here are about which method is answered by whom, and an encoder that touched a
@@ -583,6 +607,7 @@ mod tests {
             height: 720,
             rotate: 90,
             intrinsics: crate::camera::Intrinsics::nominal(Some(&crate::sensor::IMX219), 1280, 720),
+            rtp_zero_ns: None,
         });
         let parsed: serde_json::Value = serde_json::from_str(&line).expect("valid json");
         assert_eq!(parsed["method"], "media.video");
@@ -615,6 +640,7 @@ mod tests {
             height: 720,
             rotate: 0,
             intrinsics: None,
+            rtp_zero_ns: None,
         });
         let parsed: serde_json::Value = serde_json::from_str(&line).expect("valid json");
         assert!(parsed["params"].get("intrinsics").is_none(), "{line}");
