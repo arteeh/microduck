@@ -487,6 +487,9 @@ fn sim_loop(
     let mut seq = 0u64;
     let mut link: Option<SimLink> = None;
     let mut complained = false;
+    // When the next frame is due. Paced from the last request rather than slept a whole period
+    // after the answer, so the time the body takes to range does not slow the rate below `hz`.
+    let mut due = Instant::now();
 
     while !shutdown.load(Ordering::Acquire) {
         if link.is_none() {
@@ -547,7 +550,9 @@ fn sim_loop(
                 continue;
             }
         }
-        sleep_unless_shutdown(period, shutdown);
+        let now = Instant::now();
+        due = (due + period).max(now);
+        sleep_unless_shutdown(due - now, shutdown);
     }
 }
 
