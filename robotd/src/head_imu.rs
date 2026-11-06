@@ -35,7 +35,7 @@ use duck_ipc_proto as proto;
 pub const SAMPLE_HZ: u8 = 60;
 
 /// How often the reader drains the FIFO. Four samples a wakeup at [`SAMPLE_HZ`].
-pub const WAKE_HZ: u32 = 15;
+pub const WAKE_HZ: u32 = 60;
 
 /// How far a subscriber may fall behind before it loses frames: ~2 s at [`SAMPLE_HZ`].
 pub const FRAME_BUFFER: usize = 128;
